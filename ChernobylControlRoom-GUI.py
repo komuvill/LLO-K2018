@@ -6,6 +6,8 @@ import os
 import time
 from datetime import datetime
 import pymysql
+import matplotlib.pyplot as plt
+import RPi.GPIO as GPIO
 
 os.system('modprobe w1-gpio')
 os.system('modprobe w1-therm')
@@ -14,12 +16,12 @@ tempSensor = '/sys/bus/w1/devices/22-0000005740da/w1_slave'
 
 uniqueDatesRaw = []
 uniqueDatesParsed = []
-filt = "[(',)]" ##TODO: Toimiva filtteri, esim filter-funktiona? Vaihtoehtoisesti muokkaa getUniqueDates-metodia
-                ## palauttamaan valmiiksi filtteröityjä tietoja
-
 
 db = pymysql.connect(host="xxx", user="xxx", passwd="xxx", db="xxx")
 query = ""
+
+ledPin = 20
+buttonPin = 23
 
 class ChernobylStation(Frame):
 
@@ -31,27 +33,33 @@ class ChernobylStation(Frame):
         
         for row in uniqueDatesRaw:
             line = str(row)
-            uniqueDatesParsed.append(line.replace(filt,"")) ## Ei filtteröi oikein
+            uniqueDatesParsed.append(line.lstrip("(,'").rstrip("',)"))
             
         self.valikko = ttk.Combobox(self.frameMain, values=list(uniqueDatesParsed))
         self.label = tk.Label(self.frameMain, text="Select date from the drop down menu")
-        self.closeButton = Button(self, text="Close", command=self.quit)
+        self.closeButton = Button(self, text="Close", command =lambda: self.close())
         self.plotButton = Button(self.frameMain, text="Plot", command=lambda: self.plot())
+        self.meltDownLabel = tk.Label(self.frameMain, text="")
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(ledPin, GPIO.OUT)
+        GPIO.setup(buttonPin, GPIO.IN, pull_up_down = GPIO.PUD_UP)
         self.initUI()
         
-    def plot(self):
-        self.label.configure(text=self.valikko.get())
-        ##TODO: Integroi newplotter.py kanssa, getReadings-metodilla saatava valitun päivän lämpötilat & kellonajat
-
     def initUI(self):
         self.master.title("Chernobyl Control Station 1")
         self.style.theme_use("default")
         self.frameMain.pack(fill=BOTH, expand=True)
-        self.label.place(x=100, y=80)
+        self.label.place(x=40, y=80)
         self.valikko.place(x=40, y=120)
-        self.searchButton.place(x=240, y=120)
+        self.plotButton.place(x=240, y=120)
+        self.meltDownLabel.place(x = 40, y = 160)
         self.pack(fill=BOTH, expand=True)
         self.closeButton.pack(side=RIGHT, padx=5, pady=5)
+
+    def close(self):
+        GPIO.cleanup()
+        db.close()
+        self.master.destroy()
 
     def rawTemp(self):
         f = open(tempSensor, 'r')
@@ -80,6 +88,19 @@ class ChernobylStation(Frame):
     @staticmethod
     def getTime(d):
         return d.strftime("%H:%M:%S")
+
+    def plot(self):
+        date = self.valikko.get()
+        taulu = self.getReadings(date)
+        x = []
+        y = []
+        for e in taulu:
+            y.append(float(e[1]))
+            x.append(datetime.strptime(e[0], '%H:%M:%S'))
+            
+        plt.plot( x, y, linestyle='-' , marker='o')
+        plt.gcf().autofmt_xdate()
+        plt.show()
     
     def sendReadings(self):
         d = datetime.now()
@@ -92,10 +113,9 @@ class ChernobylStation(Frame):
         db.commit()
         self.after(1000, self.sendReadings)    
     
-    def getReadings():
-        #Tätä muokattava ottamaan dynaamisesti vastaan päivämäärän, joka valitaan alasvetovalikosta
-        
-        query = "SELECT time, temp FROM chernobylmeasurements WHERE date LIKE '2018-02-15'"
+    def getReadings(self, date):
+        query = "SELECT time, temp FROM chernobylmeasurements WHERE date LIKE '{0}'".format(date)
+        print(query)
         cur = db.cursor()
         cur.execute(query)
         taulu = cur.fetchall()
@@ -107,12 +127,33 @@ class ChernobylStation(Frame):
         cur.execute(query)
         taulu = cur.fetchall()
         return taulu
+
+    def checkIfMeltdownImminent(self):
+        query = "SELECT temp FROM chernobylmeasurements WHERE id = (SELECT max(id) FROM chernobylmeasurements)"
+        cur = db.cursor()
+        cur.execute(query)
+        latestTemp = str(cur.fetchall()).lstrip("((").rstrip(",),)")
+        self.after(1000, self.checkIfMeltdownImminent)
+        if((float(latestTemp) < 24.0)):
+            self.meltDownLabel.config(text = "Everything is fine, latest reading: " + latestTemp, bg="light green")
+        else:
+            GPIO.output(ledPin, GPIO.HIGH)
+            self.meltDownLabel.config(text = "MELTDOWN IS IMMINENT", bg = "red")
+            ##TODO: Käynnistä 15s timer, kun timer saapuu nollaan tapahtuu kauheita
+            
+        self.preventMeltdown()
+
+    def preventMeltdown(self):
+        if(GPIO.input(buttonPin) == False):
+           GPIO.output(ledPin, GPIO.LOW)
+            
           
 def main():
     root = tk.Tk()
     root.geometry("400x300")
     app = ChernobylStation()
     root.after(0, app.sendReadings())
+    root.after(0, app.checkIfMeltdownImminent())
     root.mainloop()
         
 if __name__ == "__main__":
@@ -121,3 +162,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Keyboard interrupt detected, closing the database!")
         db.close()
+        GPIO.cleanup()
+        root.quit()
