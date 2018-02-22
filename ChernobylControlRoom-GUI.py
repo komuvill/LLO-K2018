@@ -22,6 +22,10 @@ query = ""
 
 ledPin = 20
 buttonPin = 23
+meltdownPin = 18
+meltdownInProgress = False
+kuittaus = False #Kriittisen massan kuittaus
+timer = 0
 
 class ChernobylStation(Frame):
 
@@ -42,6 +46,8 @@ class ChernobylStation(Frame):
         self.meltDownLabel = tk.Label(self.frameMain, text="")
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(ledPin, GPIO.OUT)
+        GPIO.setup(meltdownPin, GPIO.OUT)
+        GPIO.output(meltdownPin, GPIO.LOW)
         GPIO.setup(buttonPin, GPIO.IN, pull_up_down = GPIO.PUD_UP)
         self.initUI()
         
@@ -133,21 +139,33 @@ class ChernobylStation(Frame):
         cur = db.cursor()
         cur.execute(query)
         latestTemp = str(cur.fetchall()).lstrip("((").rstrip(",),)")
-        self.after(1000, self.checkIfMeltdownImminent)
-        if((float(latestTemp) < 24.0)):
+        self.after(10, self.checkIfMeltdownImminent)
+        global meltdownInProgress, kuittaus, timer
+        
+        if((float(latestTemp)) > 23.0 and kuittaus == False):
+            if(GPIO.input(ledPin) == False):
+                GPIO.output(ledPin, GPIO.HIGH)
+                
+            self.meltDownLabel.config(text = "MELTDOWN IS IMMINENT!", bg = "red")
+            meltdownInProgress = True
+            timer += 1
+        elif(meltdownInProgress != True or kuittaus == True):
             self.meltDownLabel.config(text = "Everything is fine, latest reading: " + latestTemp, bg="light green")
-        else:
-            GPIO.output(ledPin, GPIO.HIGH)
-            self.meltDownLabel.config(text = "MELTDOWN IS IMMINENT", bg = "red")
-            ##TODO: Käynnistä 15s timer, kun timer saapuu nollaan tapahtuu kauheita
-            
+            if((float(latestTemp)) < 23.0):
+               kuittaus = False
+               
         self.preventMeltdown()
+        if(timer > 500):
+            GPIO.output(meltdownPin, GPIO.HIGH)
 
     def preventMeltdown(self):
+        global meltdownInProgress, kuittaus, timer
         if(GPIO.input(buttonPin) == False):
            GPIO.output(ledPin, GPIO.LOW)
-            
-          
+           meltdownInProgress = False
+           kuittaus = True
+           timer = 0           
+                     
 def main():
     root = tk.Tk()
     root.geometry("400x300")
