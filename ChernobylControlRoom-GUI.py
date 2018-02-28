@@ -25,32 +25,37 @@ buttonPin = 23
 meltdownPin = 18
 meltdownInProgress = False
 kuittaus = False #Kriittisen massan kuittaus
-timer = 0
+timer = 0 #Timer käynnistyy, jos kriittistä massaa ei kuitata
 
 class ChernobylStation(Frame):
-
+    
+    #Käyttöliittymäkomponenttien, pinnien yms. alkumäärittelyt
     def __init__(self):
         super().__init__()
         self.frameMain = Frame(self, relief=RAISED, borderwidth=1)
         self.style = Style()
         uniqueDatesRaw = self.getUniqueDates()
         
+        #Siivotaan uniikkien päivämäärien raakadatasta ylimääräiset merkit pois
         for row in uniqueDatesRaw:
             line = str(row)
             uniqueDatesParsed.append(line.lstrip("(,'").rstrip("',)"))
             
+        #Käyttöliittymäkomponentit    
         self.valikko = ttk.Combobox(self.frameMain, values=list(uniqueDatesParsed))
         self.label = tk.Label(self.frameMain, text="Select date from the drop down menu")
         self.closeButton = Button(self, text="Close", command =lambda: self.close())
         self.plotButton = Button(self.frameMain, text="Plot", command=lambda: self.plot())
         self.meltDownLabel = tk.Label(self.frameMain, text="")
+        #Pinnit
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(ledPin, GPIO.OUT)
         GPIO.setup(meltdownPin, GPIO.OUT)
         GPIO.output(meltdownPin, GPIO.LOW)
         GPIO.setup(buttonPin, GPIO.IN, pull_up_down = GPIO.PUD_UP)
         self.initUI()
-        
+    
+    #Lisää käyttöliittymäkomponenttien määrittelyä
     def initUI(self):
         self.master.title("Chernobyl Control Station 1")
         self.style.theme_use("default")
@@ -61,18 +66,21 @@ class ChernobylStation(Frame):
         self.meltDownLabel.place(x = 40, y = 160)
         self.pack(fill=BOTH, expand=True)
         self.closeButton.pack(side=RIGHT, padx=5, pady=5)
-
+    
+    #Tietokantayhteyksien ja pinnien oikeaoppinen sammuttaminen
     def close(self):
         GPIO.cleanup()
         db.close()
         self.master.destroy()
-
+    
+    #Haetaan raakadata lämpötilasensorilta
     def rawTemp(self):
         f = open(tempSensor, 'r')
         lines = f.readlines()
         f.close()
         return lines
-
+    
+    #Siivotaan raakadata
     def readTemp(self):
         lines = self.rawTemp()
         
@@ -87,14 +95,16 @@ class ChernobylStation(Frame):
             
         return tempC
     
+    #Palauttaa datetime-olion päivämääräkomponentin
     @staticmethod
     def getDate(d):
         return d.date()
-    
+    #Palauttaa datetime-olion kellonaikakomponentin
     @staticmethod
     def getTime(d):
         return d.strftime("%H:%M:%S")
-
+    
+    #Datan plottaus halutulta päivämäärältä
     def plot(self):
         date = self.valikko.get()
         taulu = self.getReadings(date)
@@ -108,6 +118,7 @@ class ChernobylStation(Frame):
         plt.gcf().autofmt_xdate()
         plt.show()
     
+    #Tallennetaan lukemat tietokantaan, kutsutaan sekunnin välein
     def sendReadings(self):
         d = datetime.now()
         date = str(self.getDate(d))
@@ -119,6 +130,7 @@ class ChernobylStation(Frame):
         db.commit()
         self.after(1000, self.sendReadings)    
     
+    #Haetaan halutun päivämäärän mittaustulokset, palauttaa tuplen
     def getReadings(self, date):
         query = "SELECT time, temp FROM chernobylmeasurements WHERE date LIKE '{0}'".format(date)
         print(query)
@@ -126,22 +138,25 @@ class ChernobylStation(Frame):
         cur.execute(query)
         taulu = cur.fetchall()
         return taulu
-       
+    
+    #Hakee uniikit päivämäärät, jolloin mittauksia on suoritettu   
     def getUniqueDates(self):
         query = "SELECT DISTINCT(date) FROM chernobylmeasurements"
         cur = db.cursor()
         cur.execute(query)
         taulu = cur.fetchall()
         return taulu
-
+    
+    #Hakee tuoreimman mittaustuloksen tietokannasta ja käynnistää reaktorin ytimen sulamisen
     def checkIfMeltdownImminent(self):
         query = "SELECT temp FROM chernobylmeasurements WHERE id = (SELECT max(id) FROM chernobylmeasurements)"
         cur = db.cursor()
         cur.execute(query)
         latestTemp = str(cur.fetchall()).lstrip("((").rstrip(",),)")
-        self.after(10, self.checkIfMeltdownImminent)
+        self.after(10, self.checkIfMeltdownImminent) #Metodia kutsutaan 10 millisekunnin välein
         global meltdownInProgress, kuittaus, timer
         
+        #Jos mitattu lämpötila on yli 23 astetta käynnistetään ajastin ja sytytetään keltainen ledi merkiksi lähestyvästä katastrofista
         if((float(latestTemp)) > 23.0 and kuittaus == False):
             if(GPIO.input(ledPin) == False):
                 GPIO.output(ledPin, GPIO.HIGH)
@@ -151,21 +166,24 @@ class ChernobylStation(Frame):
             timer += 1
         elif(meltdownInProgress != True or kuittaus == True):
             self.meltDownLabel.config(text = "Everything is fine, latest reading: " + latestTemp, bg="light green")
+            #Uusi ytimen sulaminen voi alkaa vasta kun entinen on kuitattu ja lämpötila laskee takaisin alle 23 asteen
             if((float(latestTemp)) < 23.0):
                kuittaus = False
                
-        self.preventMeltdown()
+        self.preventMeltdown() #Tarkastetaan onko teknikko käynnistänyt sulamisen estämisen
+        #timer-muuttuja saa arvon 500 noin 5 sekunnissa, onnettomuus on tällöin tapahtunut
         if(timer > 500):
             GPIO.output(meltdownPin, GPIO.HIGH)
 
     def preventMeltdown(self):
         global meltdownInProgress, kuittaus, timer
+        #Kuittaus tapahtuu painonapilla
         if(GPIO.input(buttonPin) == False):
            GPIO.output(ledPin, GPIO.LOW)
            meltdownInProgress = False
            kuittaus = True
            timer = 0           
-                     
+#Ohjelman pääfunktio                     
 def main():
     root = tk.Tk()
     root.geometry("400x300")
@@ -177,6 +195,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    #Ctrl+C Pythonin shellissä saa aikaan KeyboardInterruptin, joka sammuttaa tietokantayhteyden ja "siivoaa" pinnit    
     except KeyboardInterrupt:
         print("Keyboard interrupt detected, closing the database!")
         db.close()
